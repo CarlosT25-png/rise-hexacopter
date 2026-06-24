@@ -1,7 +1,8 @@
 """
-LoRa serial listener — prints whatever is received from the RX module.
+LoRa serial listener — prints text received from the RX module.
 
 Connection: LoRa RX module -> Jetson USB, /dev/ttyUSB0 @ 115200 baud
+Messages are read as UTF-8 text, one line per packet (newline-terminated).
 """
 
 import sys
@@ -23,7 +24,7 @@ DEFAULT_BAUD = 115200
 
 def listen(port=DEFAULT_PORT, baud=DEFAULT_BAUD):
     """
-    Open the LoRa serial port and print each received byte as it arrives.
+    Open the LoRa serial port and print each received text line.
     Blocks until KeyboardInterrupt.
     """
     try:
@@ -36,12 +37,16 @@ def listen(port=DEFAULT_PORT, baud=DEFAULT_BAUD):
 
     try:
         while True:
-            raw = ser.read(1)
+            raw = ser.readline()
             if not raw:
                 continue
 
+            text = raw.decode("utf-8", errors="replace").strip()
+            if not text:
+                continue
+
             ts = time.strftime("%H:%M:%S")
-            print(f"[{ts}] {raw[0]}")
+            print(f"[{ts}] {text}")
     finally:
         ser.close()
         print("\nLoRa listener stopped.")
