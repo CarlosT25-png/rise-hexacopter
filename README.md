@@ -74,7 +74,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-`main.py` auto-starts MAVProxy by default and forwards to `127.0.0.1:14551` and `192.168.1.100:14550`.
+Pixhawk connection defaults are in `main.py` (`SERIAL_PORT`, `BAUD`). LoRa defaults: `RX_LORA_PORT`, `BAUD_LORA`.
 
 #### Run the code
 
@@ -83,14 +83,68 @@ source .venv/bin/activate
 python3 main.py
 ```
 
-If MAVProxy is already running in another terminal, use `--no-start-mavproxy`:
+Interactive menu options include motor tests, hover flight, and LoRa RX.
+
+To start the LoRa listener directly (no menu):
 
 ```bash
-python3 main.py --no-start-mavproxy
+source .venv/bin/activate
+python3 main.py --lora
 ```
 
-Direct serial (no MAVProxy; QGC won't receive telemetry):
+LoRa JSON commands:
+
+| `msg` | Action |
+|-------|--------|
+| `"1"` | Sequential motor test |
+| `"2"` | Simultaneous motor test |
+| `"3"` | Both motor tests |
+| `"4"` | Hover flight |
+
+#### LoRa RX systemd service (auto-restart on failure)
+
+Use this to run the LoRa listener in the background on boot and restart it if the process crashes (serial disconnect, Pixhawk link lost, etc.).
+
+1. Create the service file (adjust paths and user if needed):
 
 ```bash
-python3 main.py --serial /dev/ttyTHS1 --baudrate 57600
+sudo nano /etc/systemd/system/venator-lora.service
 ```
+
+2. Paste the following, updating `User`, `WorkingDirectory`, and `ExecStart` to match your Jetson setup:
+
+```ini
+[Unit]
+Description=Venator LoRa RX listener
+After=network.target
+
+[Service]
+Type=simple
+User=jetson
+WorkingDirectory=/home/jetson/hexacopter
+ExecStart=/home/jetson/hexacopter/.venv/bin/python3 main.py --lora
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+3. Enable and start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable venator-lora.service
+sudo systemctl start venator-lora.service
+```
+
+4. Useful commands:
+
+```bash
+sudo systemctl status venator-lora.service   # check status
+sudo journalctl -u venator-lora.service -f   # follow logs
+sudo systemctl restart venator-lora.service  # manual restart
+sudo systemctl stop venator-lora.service     # stop
+```
+
+The service exits with code 0 on a normal stop and code 1 on unexpected errors, so `Restart=on-failure` will restart after crashes but not after a deliberate `systemctl stop`.

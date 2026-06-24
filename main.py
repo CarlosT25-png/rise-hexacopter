@@ -4,6 +4,7 @@ VENATOR HEXACOPTER — motor test, hover flight, and LoRa control.
 Connection: Jetson J41 UART -> Pixhawk TELEM2, 57600 baud, /dev/ttyACM1
 """
 
+import argparse
 import time
 import sys
 import threading
@@ -268,7 +269,34 @@ def handle_lora_msg(master, msg):
         run_hover_flight(master)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Venator hexacopter control")
+    parser.add_argument(
+        "--lora",
+        action="store_true",
+        help="start LoRa RX listener (menu option 5), no prompts",
+    )
+    return parser.parse_args()
+
+
+def run_lora_mode():
+    print("=" * 55)
+    print("VENATOR HEXACOPTER — LoRa RX")
+    print("=" * 55)
+    master = connect()
+    listen_lora(
+        port=RX_LORA_PORT,
+        baud=BAUD_LORA,
+        on_msg=lambda msg: handle_lora_msg(master, msg),
+    )
+
+
 def main():
+    args = parse_args()
+    if args.lora:
+        run_lora_mode()
+        return
+
     print("=" * 55)
     print("VENATOR HEXACOPTER — MOTOR TEST / FLIGHT / LoRa")
     print("=" * 55)
@@ -301,6 +329,10 @@ def main():
         print("Invalid choice. Exiting.")
         sys.exit(1)
 
+    if choice == "5":
+        run_lora_mode()
+        return
+
     master = connect()
 
     if choice == "1":
@@ -311,13 +343,6 @@ def main():
         run_both(master)
     elif choice == "4":
         run_hover_flight(master)
-    elif choice == "5":
-        listen_lora(
-            port=RX_LORA_PORT,
-            baud=BAUD_LORA,
-            on_msg=lambda msg: handle_lora_msg(master, msg),
-        )
-        return
 
     print("\nDone.")
 
@@ -326,4 +351,10 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nInterrupted by user. Motors will time out and stop.")
+        print("\nInterrupted.")
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(f"\nFatal error: {exc}")
+        sys.exit(1)
