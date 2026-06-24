@@ -17,7 +17,7 @@ import time
 try:
     import serial
 except ImportError:
-    print("pyserial is required for LoRa. Run: pip install pyserial")
+    print("pyserial is required for LoRa. Run: pip install pyserial", flush=True)
     sys.exit(1)
 
 # ----------------------------------------------------------------------
@@ -36,11 +36,12 @@ def listen(port=DEFAULT_PORT, baud=DEFAULT_BAUD, on_msg=None):
     try:
         ser = serial.Serial(port, baud, timeout=1)
     except serial.SerialException as exc:
-        print(f"Cannot open LoRa port {port} @ {baud}: {exc}")
+        print(f"Cannot open LoRa port {port} @ {baud}: {exc}", flush=True)
         sys.exit(1)
 
-    print(f"Listening on {port} @ {baud} baud  (Ctrl+C to stop)")
-    print('Expecting JSON like {"msg": "1"}\n')
+    print(f"Listening on {port} @ {baud} baud  (Ctrl+C to stop)", flush=True)
+    print('Expecting JSON like {"msg": "1"}', flush=True)
+    print("Ready — waiting for LoRa packets...", flush=True)
 
     try:
         while True:
@@ -57,18 +58,18 @@ def listen(port=DEFAULT_PORT, baud=DEFAULT_BAUD, on_msg=None):
             try:
                 payload = json.loads(text)
             except json.JSONDecodeError:
-                print(f"[{ts}] ignored (invalid JSON): {text}")
+                print(f"[{ts}] ignored (invalid JSON): {text}", flush=True)
                 continue
 
             if not isinstance(payload, dict) or "msg" not in payload:
-                print(f"[{ts}] ignored (missing msg field): {text}")
+                print(f"[{ts}] ignored (missing msg field): {text}", flush=True)
                 continue
 
             msg = str(payload["msg"]).strip()
-            print(f"[{ts}] msg={msg!r}")
+            print(f"[{ts}] msg={msg!r}", flush=True)
 
             if on_msg is not None:
                 on_msg(msg)
     finally:
         ser.close()
-        print("\nLoRa listener stopped.")
+        print("\nLoRa listener stopped.", flush=True)

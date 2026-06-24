@@ -37,18 +37,31 @@ ARM_TIMEOUT_S    = 30  # max seconds to retry arming
 # ----------------------------------------------------------------------
 
 
+def setup_service_logging():
+    """Print to journal immediately when running under systemd (no TTY)."""
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except (AttributeError, OSError):
+        pass
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
 def connect():
-    print(f"Connecting to {SERIAL_PORT} @ {BAUD}...")
+    log(f"Connecting to Pixhawk {SERIAL_PORT} @ {BAUD}...")
     master = mavutil.mavlink_connection(
         SERIAL_PORT,
         baud=BAUD,
         source_system=255,
         source_component=0,
     )
-    print("Waiting for heartbeat...")
+    log("Waiting for Pixhawk heartbeat...")
     master.wait_heartbeat()
-    print(f"Heartbeat OK — system {master.target_system}, "
-          f"component {master.target_component}")
+    log(f"Pixhawk heartbeat OK — system {master.target_system}, "
+        f"component {master.target_component}")
     start_gcs_heartbeat(master)
     return master
 
@@ -276,24 +289,45 @@ def parse_args():
         action="store_true",
         help="start LoRa RX listener (menu option 5), no prompts",
     )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="force interactive menu (default when run from a terminal)",
+    )
     return parser.parse_args()
 
 
+def should_run_lora(args):
+    if args.lora:
+        return True
+    if args.interactive:
+        return False
+    if not sys.stdin.isatty():
+        log("Non-interactive session detected — starting LoRa RX")
+        return True
+    return False
+
+
 def run_lora_mode():
-    print("=" * 55)
-    print("VENATOR HEXACOPTER — LoRa RX")
-    print("=" * 55)
+    log("Venator LoRa RX starting...")
+    log("=" * 55)
+    log("VENATOR HEXACOPTER — LoRa RX")
+    log("=" * 55)
+    log(f"LoRa port: {RX_LORA_PORT} @ {BAUD_LORA}")
     master = connect()
+    log("Pixhawk connected. Opening LoRa serial port...")
     listen_lora(
         port=RX_LORA_PORT,
         baud=BAUD_LORA,
         on_msg=lambda msg: handle_lora_msg(master, msg),
     )
+    log("LoRa listener exited.")
 
 
 def main():
+    setup_service_logging()
     args = parse_args()
-    if args.lora:
+    if should_run_lora(args):
         run_lora_mode()
         return
 

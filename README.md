@@ -122,9 +122,13 @@ After=network.target
 Type=simple
 User=jetson
 WorkingDirectory=/home/jetson/hexacopter
-ExecStart=/home/jetson/hexacopter/.venv/bin/python3 main.py --lora
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/jetson/hexacopter/.venv/bin/python3 -u main.py --lora
 Restart=on-failure
 RestartSec=5
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -138,6 +142,22 @@ sudo systemctl enable venator-lora.service
 sudo systemctl start venator-lora.service
 ```
 
+`systemctl start` only prints **Started venator-lora.service** — that means systemd launched the process, not that LoRa is already listening. View the application logs with:
+
+```bash
+sudo journalctl -u venator-lora.service -f
+```
+
+You should see lines like:
+
+```text
+Venator LoRa RX starting...
+Connecting to Pixhawk /dev/ttyACM1 @ 57600...
+Pixhawk heartbeat OK ...
+Listening on /dev/ttyUSB0 @ 115200 baud
+Ready — waiting for LoRa packets...
+```
+
 4. Useful commands:
 
 ```bash
@@ -148,3 +168,5 @@ sudo systemctl stop venator-lora.service     # stop
 ```
 
 The service exits with code 0 on a normal stop and code 1 on unexpected errors, so `Restart=on-failure` will restart after crashes but not after a deliberate `systemctl stop`.
+
+**Important:** `ExecStart` must include `--lora`. Without it (and without a terminal), the script will try to show the interactive menu and fail with `EOF when reading a line`. The latest code also auto-starts LoRa when stdin is not a terminal, but `--lora` is still recommended for systemd.
