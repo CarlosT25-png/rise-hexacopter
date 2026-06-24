@@ -83,7 +83,7 @@ def main():
     print("  1) Sequential motor test (1..6 one at a time)")
     print("  2) Simultaneous motor test (all 6 together)")
     print("  3) Both motor tests (sequential, then simultaneous)")
-    print("  4) Listen to LoRa (1-byte mission packets)")
+    print("  4) Listen to LoRa")
     choice = input("Choice [1/2/3/4]: ").strip()
 
     if choice == "4":
