@@ -41,7 +41,7 @@ pip install -r requirements.txt
 1. Run the flight script:
 
 ```bash
-python main.py
+python main.py --no-start-mavproxy
 ```
 
 1. Verify the drone's path in QGroundControl.
@@ -74,24 +74,23 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-`main.py` uses **pymavlink** to talk to the autopilot through MAVProxy's UDP port (`14551`). Start MAVProxy before running the script.
+`main.py` auto-starts MAVProxy by default and forwards to `127.0.0.1:14551` and `192.168.1.100:14550`.
 
 #### Run the code
 
-1. Run MAVProxy (expects the Jetson is connected to the Pixhawk through the GPIO pin):
-
-```bash
-mavproxy.py --master=/dev/ttyTHS1 --baudrate=57600 --out=udp:127.0.0.1:14551 --out=udp:192.168.1.100:14550
-```
-
-1. Activate the Python virtual environment:
-
 ```bash
 source .venv/bin/activate
+python3 main.py
 ```
 
-1. Run the flight script:
+If MAVProxy is already running in another terminal, use `--no-start-mavproxy`:
 
 ```bash
-python3 main.py
+python3 main.py --no-start-mavproxy
+```
+
+Direct serial (no MAVProxy; QGC won't receive telemetry):
+
+```bash
+python3 main.py --serial /dev/ttyTHS1 --baudrate 57600
 ```
