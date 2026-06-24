@@ -74,6 +74,13 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+If `grpcio` fails to install from pip on ARM, install it from apt first:
+
+```bash
+sudo apt install -y python3-grpcio
+pip install -r requirements.txt
+```
+
 #### Run the code
 
 1. Run MAVProxy (expects the Jetson is connected to the Pixhawk through the GPIO pin):
