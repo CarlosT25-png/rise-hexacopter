@@ -1,10 +1,13 @@
 """
-LoRa serial listener — prints text received from the RX module.
+LoRa serial listener — receives JSON commands from the RX module.
 
 Connection: LoRa RX module -> Jetson USB, /dev/ttyUSB0 @ 115200 baud
-Messages are read as UTF-8 text, one line per packet (newline-terminated).
+
+Expected payload (one JSON object per line):
+  {"msg": "1"}  -> handled by on_msg callback
 """
 
+import json
 import sys
 import time
 
@@ -22,10 +25,10 @@ DEFAULT_BAUD = 115200
 # ----------------------------------------------------------------------
 
 
-def listen(port=DEFAULT_PORT, baud=DEFAULT_BAUD):
+def listen(port=DEFAULT_PORT, baud=DEFAULT_BAUD, on_msg=None):
     """
-    Open the LoRa serial port and print each received text line.
-    Blocks until KeyboardInterrupt.
+    Open the LoRa serial port, parse JSON lines, and call on_msg with the
+    value of the "msg" field. Blocks until KeyboardInterrupt.
     """
     try:
         ser = serial.Serial(port, baud, timeout=1)
@@ -33,7 +36,8 @@ def listen(port=DEFAULT_PORT, baud=DEFAULT_BAUD):
         print(f"Cannot open LoRa port {port} @ {baud}: {exc}")
         sys.exit(1)
 
-    print(f"Listening on {port} @ {baud} baud  (Ctrl+C to stop)\n")
+    print(f"Listening on {port} @ {baud} baud  (Ctrl+C to stop)")
+    print('Expecting JSON like {"msg": "1"}\n')
 
     try:
         while True:
@@ -46,7 +50,22 @@ def listen(port=DEFAULT_PORT, baud=DEFAULT_BAUD):
                 continue
 
             ts = time.strftime("%H:%M:%S")
-            print(f"[{ts}] {text}")
+
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                print(f"[{ts}] ignored (invalid JSON): {text}")
+                continue
+
+            if not isinstance(payload, dict) or "msg" not in payload:
+                print(f"[{ts}] ignored (missing msg field): {text}")
+                continue
+
+            msg = str(payload["msg"]).strip()
+            print(f"[{ts}] msg={msg!r}")
+
+            if on_msg is not None:
+                on_msg(msg)
     finally:
         ser.close()
         print("\nLoRa listener stopped.")

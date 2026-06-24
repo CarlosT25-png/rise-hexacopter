@@ -75,6 +75,22 @@ def run_simultaneous(master):
     print("Simultaneous test complete.")
 
 
+def run_both(master):
+    run_sequential(master)
+    time.sleep(2)
+    run_simultaneous(master)
+
+
+def handle_lora_msg(master, msg):
+    """Run a motor test based on the LoRa msg field; ignore anything else."""
+    if msg == "1":
+        run_sequential(master)
+    elif msg == "2":
+        run_simultaneous(master)
+    elif msg == "3":
+        run_both(master)
+
+
 def main():
     print("=" * 55)
     print("VENATOR HEXACOPTER — MOTOR TEST / LoRa LISTENER")
@@ -83,17 +99,23 @@ def main():
     print("  1) Sequential motor test (1..6 one at a time)")
     print("  2) Simultaneous motor test (all 6 together)")
     print("  3) Both motor tests (sequential, then simultaneous)")
-    print("  4) Listen to LoRa")
+    print("  4) Listen to LoRa (JSON commands: 1=sequential, 2=simultaneous, 3=both)")
     choice = input("Choice [1/2/3/4]: ").strip()
 
-    if choice == "4":
-        listen_lora(port=RX_LORA_PORT, baud=BAUD_LORA)
-        return
+    if choice in ("1", "2", "3", "4"):
+        ans = input("Props removed and frame secured? (yes/no): ").strip().lower()
+        if ans != "yes":
+            print("Aborting. Remove props first.")
+            sys.exit(1)
 
-    ans = input("Props removed and frame secured? (yes/no): ").strip().lower()
-    if ans != "yes":
-        print("Aborting. Remove props first.")
-        sys.exit(1)
+    if choice == "4":
+        master = connect()
+        listen_lora(
+            port=RX_LORA_PORT,
+            baud=BAUD_LORA,
+            on_msg=lambda msg: handle_lora_msg(master, msg),
+        )
+        return
 
     master = connect()
 
@@ -102,9 +124,7 @@ def main():
     elif choice == "2":
         run_simultaneous(master)
     elif choice == "3":
-        run_sequential(master)
-        time.sleep(2)
-        run_simultaneous(master)
+        run_both(master)
     else:
         print("Invalid choice. Exiting.")
         sys.exit(1)
