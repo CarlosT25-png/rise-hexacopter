@@ -1,6 +1,5 @@
 """
-VENATOR MOTOR TEST CODE
-SAFETY: PROPS OFF / BARE MOTORS ONLY. Secure the frame before running.
+VENATOR HEXACOPTER — motor test, hover flight, and LoRa control.
 
 Connection: Jetson J41 UART -> Pixhawk TELEM2, 57600 baud, /dev/ttyACM1
 """
@@ -26,6 +25,11 @@ SETTLE_S      = 1.0    # pause between motors in sequential mode
 
 # DO_MOTOR_TEST throttle type: 0 = percent, 1 = PWM, 2 = pilot passthrough
 THROTTLE_TYPE = 0      # percent
+
+TAKEOFF_ALT_M = 5.0    # meters above home for hover flight
+HOVER_TIME_S  = 30     # seconds to hold altitude before landing
+ALT_TOLERANCE_M = 0.5  # meters — considered "at altitude" within this band
+TAKEOFF_TIMEOUT_S = 60 # max seconds to wait to reach takeoff altitude
 # ----------------------------------------------------------------------
 
 
@@ -81,6 +85,78 @@ def run_both(master):
     run_simultaneous(master)
 
 
+def wait_armed(master, timeout_s=30):
+    start = time.time()
+    while time.time() - start < timeout_s:
+        msg = master.recv_match(type="HEARTBEAT", blocking=True, timeout=1)
+        if msg and (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED):
+            return True
+    return False
+
+
+def get_relative_alt_m(master):
+    msg = master.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=1)
+    if msg is None:
+        return None
+    return msg.relative_alt / 1000.0
+
+
+def wait_for_altitude(master, target_alt_m, tolerance_m=ALT_TOLERANCE_M,
+                      timeout_s=TAKEOFF_TIMEOUT_S):
+    start = time.time()
+    while time.time() - start < timeout_s:
+        alt_m = get_relative_alt_m(master)
+        if alt_m is not None:
+            print(f"  Altitude: {alt_m:.1f} m")
+            if alt_m >= target_alt_m - tolerance_m:
+                return True
+    return False
+
+
+def run_hover_flight(master):
+    print(f"\n=== HOVER FLIGHT: {TAKEOFF_ALT_M} m for {HOVER_TIME_S} s ===")
+
+    print("Setting GUIDED mode...")
+    master.set_mode_apm("GUIDED")
+    time.sleep(1)
+
+    print("Arming...")
+    master.arducopter_arm()
+    if not wait_armed(master):
+        print("Failed to arm. Check pre-arm checks and GPS/EKF status.")
+        sys.exit(1)
+    print("Armed.")
+
+    print(f"Takeoff to {TAKEOFF_ALT_M} m...")
+    master.mav.command_long_send(
+        master.target_system,
+        master.target_component,
+        mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+        0,
+        0, 0, 0, 0, 0, 0,
+        TAKEOFF_ALT_M,
+    )
+
+    if not wait_for_altitude(master, TAKEOFF_ALT_M):
+        print("Takeoff timed out. Switching to LAND.")
+        master.set_mode_apm("LAND")
+        sys.exit(1)
+
+    print(f"Hovering for {HOVER_TIME_S} s...")
+    hover_end = time.time() + HOVER_TIME_S
+    while time.time() < hover_end:
+        alt_m = get_relative_alt_m(master)
+        remaining = int(hover_end - time.time())
+        if alt_m is not None:
+            print(f"  Hover: {alt_m:.1f} m  ({remaining}s left)")
+        time.sleep(1)
+
+    print("Landing...")
+    master.set_mode_apm("LAND")
+    time.sleep(5)
+    print("Hover flight complete.")
+
+
 def handle_lora_msg(master, msg):
     """Run a motor test based on the LoRa msg field; ignore anything else."""
     if msg == "1":
@@ -93,29 +169,29 @@ def handle_lora_msg(master, msg):
 
 def main():
     print("=" * 55)
-    print("VENATOR HEXACOPTER — MOTOR TEST / LoRa LISTENER")
+    print("VENATOR HEXACOPTER — MOTOR TEST / FLIGHT / LoRa")
     print("=" * 55)
     print("\nSelect mode:")
     print("  1) Sequential motor test (1..6 one at a time)")
     print("  2) Simultaneous motor test (all 6 together)")
     print("  3) Both motor tests (sequential, then simultaneous)")
-    print("  4) Listen to LoRa (JSON commands: 1=sequential, 2=simultaneous, 3=both)")
-    choice = input("Choice [1/2/3/4]: ").strip()
+    print(f"  4) Hover flight ({TAKEOFF_ALT_M} m for {HOVER_TIME_S} s)")
+    print("  5) Listen to LoRa (JSON commands: 1=sequential, 2=simultaneous, 3=both)")
+    choice = input("Choice [1/2/3/4/5]: ").strip()
 
-    if choice in ("1", "2", "3", "4"):
+    if choice in ("1", "2", "3", "5"):
         ans = input("Props removed and frame secured? (yes/no): ").strip().lower()
         if ans != "yes":
             print("Aborting. Remove props first.")
             sys.exit(1)
-
-    if choice == "4":
-        master = connect()
-        listen_lora(
-            port=RX_LORA_PORT,
-            baud=BAUD_LORA,
-            on_msg=lambda msg: handle_lora_msg(master, msg),
-        )
-        return
+    elif choice == "4":
+        ans = input("Area clear, props on, and ready to fly? (yes/no): ").strip().lower()
+        if ans != "yes":
+            print("Aborting.")
+            sys.exit(1)
+    else:
+        print("Invalid choice. Exiting.")
+        sys.exit(1)
 
     master = connect()
 
@@ -125,11 +201,17 @@ def main():
         run_simultaneous(master)
     elif choice == "3":
         run_both(master)
-    else:
-        print("Invalid choice. Exiting.")
-        sys.exit(1)
+    elif choice == "4":
+        run_hover_flight(master)
+    elif choice == "5":
+        listen_lora(
+            port=RX_LORA_PORT,
+            baud=BAUD_LORA,
+            on_msg=lambda msg: handle_lora_msg(master, msg),
+        )
+        return
 
-    print("\nDone. Motors should be stopped.")
+    print("\nDone.")
 
 
 if __name__ == "__main__":
