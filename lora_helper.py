@@ -69,7 +69,10 @@ def listen(port=DEFAULT_PORT, baud=DEFAULT_BAUD, on_msg=None):
             print(f"[{ts}] msg={msg!r}", flush=True)
 
             if on_msg is not None:
-                on_msg(msg)
+                try:
+                    on_msg(msg)
+                except Exception as exc:
+                    print(f"[{ts}] command error: {exc}", flush=True)
     finally:
         ser.close()
         print("\nLoRa listener stopped.", flush=True)

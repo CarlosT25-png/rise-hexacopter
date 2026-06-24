@@ -58,8 +58,12 @@ def connect():
         source_system=255,
         source_component=0,
     )
+    master.mavlink_lock = threading.Lock()
     log("Waiting for Pixhawk heartbeat...")
-    master.wait_heartbeat()
+    with master.mavlink_lock:
+        master.wait_heartbeat()
+    if master.target_component in (0, mavutil.mavlink.MAV_COMP_ID_ALL):
+        master.target_component = mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1
     log(f"Pixhawk heartbeat OK — system {master.target_system}, "
         f"component {master.target_component}")
     start_gcs_heartbeat(master)
@@ -70,22 +74,28 @@ def start_gcs_heartbeat(master):
     """Act as a GCS so ArduPilot sees a ground station (like QGroundControl)."""
     def _loop():
         while True:
-            master.mav.heartbeat_send(
-                mavutil.mavlink.MAV_TYPE_GCS,
-                mavutil.mavlink.MAV_AUTOPILOT_INVALID,
-                0, 0, 0,
-            )
+            with master.mavlink_lock:
+                master.mav.heartbeat_send(
+                    mavutil.mavlink.MAV_TYPE_GCS,
+                    mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                    0, 0, 0,
+                )
             time.sleep(1)
 
     threading.Thread(target=_loop, daemon=True).start()
 
 
+def recv_match_locked(master, **kwargs):
+    with master.mavlink_lock:
+        return master.recv_match(**kwargs)
+
+
 def drain_statustext(master):
     while True:
-        msg = master.recv_match(type="STATUSTEXT", blocking=False)
+        msg = recv_match_locked(master, type="STATUSTEXT", blocking=False)
         if msg is None:
             break
-        print(f"  FC: {msg.text}")
+        log(f"  FC: {msg.text}")
 
 
 def wait_prearm_ok(master, timeout_s=PREARM_TIMEOUT_S):
@@ -96,7 +106,7 @@ def wait_prearm_ok(master, timeout_s=PREARM_TIMEOUT_S):
 
     while time.time() - start < timeout_s:
         drain_statustext(master)
-        msg = master.recv_match(type="SYS_STATUS", blocking=True, timeout=1)
+        msg = recv_match_locked(master, type="SYS_STATUS", blocking=True, timeout=1)
         if msg is None:
             continue
 
@@ -136,10 +146,11 @@ def arm_vehicle(master, timeout_s=ARM_TIMEOUT_S):
             return True
 
         if time.time() - last_arm_send >= 2:
-            master.arducopter_arm()
+            with master.mavlink_lock:
+                master.arducopter_arm()
             last_arm_send = time.time()
 
-        ack = master.recv_match(type="COMMAND_ACK", blocking=True, timeout=0.5)
+        ack = recv_match_locked(master, type="COMMAND_ACK", blocking=True, timeout=0.5)
         if ack and ack.command == mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM:
             if ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
                 print("Arm command accepted.")
@@ -152,49 +163,71 @@ def arm_vehicle(master, timeout_s=ARM_TIMEOUT_S):
 
 
 def set_mode_and_wait(master, mode, timeout_s=10):
-    master.set_mode_apm(mode)
+    with master.mavlink_lock:
+        master.set_mode_apm(mode)
     start = time.time()
     while time.time() - start < timeout_s:
+        recv_match_locked(master, type="HEARTBEAT", blocking=True, timeout=0.2)
         if master.flightmode == mode:
             return True
         time.sleep(0.2)
     return False
 
 
+def wait_command_ack(master, command, timeout_s=3):
+    start = time.time()
+    while time.time() - start < timeout_s:
+        ack = recv_match_locked(master, type="COMMAND_ACK", blocking=True, timeout=0.5)
+        if ack and ack.command == command:
+            return ack.result
+    return None
+
+
 def motor_test(master, motor_num, throttle, duration):
     """Send a single DO_MOTOR_TEST command for one motor."""
-    master.mav.command_long_send(
-        master.target_system,
-        master.target_component,
-        mavutil.mavlink.MAV_CMD_DO_MOTOR_TEST,  # 209
-        0,                  # confirmation
-        motor_num,          # param1: motor number (1-based, ArduPilot test order)
-        THROTTLE_TYPE,      # param2: throttle type (0 = percent)
-        throttle,           # param3: throttle value
-        duration,           # param4: timeout (seconds)
-        0,                  # param5: motor count (0 = single motor)
-        0,                  # param6: test order
-        0                   # param7: unused
-    )
+    with master.mavlink_lock:
+        master.mav.command_long_send(
+            master.target_system,
+            master.target_component,
+            mavutil.mavlink.MAV_CMD_DO_MOTOR_TEST,  # 209
+            0,                  # confirmation
+            motor_num,          # param1: motor number (1-based, ArduPilot test order)
+            THROTTLE_TYPE,      # param2: throttle type (0 = percent)
+            throttle,           # param3: throttle value
+            duration,           # param4: timeout (seconds)
+            0,                  # param5: motor count (0 = single motor)
+            0,                  # param6: test order
+            0                   # param7: unused
+        )
+    result = wait_command_ack(master, mavutil.mavlink.MAV_CMD_DO_MOTOR_TEST)
+    if result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+        log(f"  Motor {motor_num}: command accepted")
+        return True
+    if result is None:
+        log(f"  Motor {motor_num}: no ACK from Pixhawk (check serial link)")
+    else:
+        log(f"  Motor {motor_num}: rejected (MAV_RESULT={result})")
+    drain_statustext(master)
+    return False
 
 
 def run_sequential(master):
-    print("\n=== SEQUENTIAL TEST: motors 1..6, one at a time ===")
+    log("=== SEQUENTIAL TEST: motors 1..6, one at a time ===")
     for m in range(1, NUM_MOTORS + 1):
-        print(f"  Motor {m}: {THROTTLE_PCT}% for {DURATION_S}s")
+        log(f"  Motor {m}: {THROTTLE_PCT}% for {DURATION_S}s")
         motor_test(master, m, THROTTLE_PCT, DURATION_S)
         time.sleep(DURATION_S + SETTLE_S)
-    print("Sequential test complete.")
+    log("Sequential test complete.")
 
 
 def run_simultaneous(master):
-    print("\n=== SIMULTANEOUS TEST: all 6 motors together ===")
-    print(f"  All motors: {THROTTLE_PCT}% for {DURATION_S}s")
+    log("=== SIMULTANEOUS TEST: all 6 motors together ===")
+    log(f"  All motors: {THROTTLE_PCT}% for {DURATION_S}s")
     for m in range(1, NUM_MOTORS + 1):
         motor_test(master, m, THROTTLE_PCT, DURATION_S)
         time.sleep(0.02)  # 20ms breather for the UART buffer
     time.sleep(DURATION_S + 0.5)
-    print("Simultaneous test complete.")
+    log("Simultaneous test complete.")
 
 
 def run_both(master):
@@ -203,56 +236,68 @@ def run_both(master):
     run_simultaneous(master)
 
 
-def run_hover_flight(master):
-    print(f"\n=== HOVER FLIGHT: {TAKEOFF_ALT_M} m for {HOVER_TIME_S} s ===")
+def run_hover_flight(master, exit_on_error=True):
+    log(f"=== HOVER FLIGHT: {TAKEOFF_ALT_M} m for {HOVER_TIME_S} s ===")
 
     if not wait_prearm_ok(master):
-        print("Pre-arm checks did not pass in time.")
-        print("Common causes: no GPS fix, EKF not ready, safety switch, throttle not low.")
-        sys.exit(1)
+        log("Pre-arm checks did not pass in time.")
+        log("Common causes: no GPS fix, EKF not ready, safety switch, throttle not low.")
+        if exit_on_error:
+            sys.exit(1)
+        return False
 
-    print("Setting GUIDED mode...")
+    log("Setting GUIDED mode...")
     if not set_mode_and_wait(master, "GUIDED"):
-        print(f"Failed to enter GUIDED mode (current: {master.flightmode}).")
-        sys.exit(1)
+        log(f"Failed to enter GUIDED mode (current: {master.flightmode}).")
+        if exit_on_error:
+            sys.exit(1)
+        return False
 
     if not arm_vehicle(master):
-        print("Failed to arm.")
-        print("Check the FC messages above (PreArm: ...) and fix the reported issue.")
-        sys.exit(1)
+        log("Failed to arm.")
+        log("Check the FC messages above (PreArm: ...) and fix the reported issue.")
+        if exit_on_error:
+            sys.exit(1)
+        return False
 
-    print(f"Takeoff to {TAKEOFF_ALT_M} m...")
-    master.mav.command_long_send(
-        master.target_system,
-        master.target_component,
-        mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
-        0,
-        0, 0, 0, 0, 0, 0,
-        TAKEOFF_ALT_M,
-    )
+    log(f"Takeoff to {TAKEOFF_ALT_M} m...")
+    with master.mavlink_lock:
+        master.mav.command_long_send(
+            master.target_system,
+            master.target_component,
+            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+            0,
+            0, 0, 0, 0, 0, 0,
+            TAKEOFF_ALT_M,
+        )
 
     if not wait_for_altitude(master, TAKEOFF_ALT_M):
-        print("Takeoff timed out. Switching to LAND.")
-        master.set_mode_apm("LAND")
-        sys.exit(1)
+        log("Takeoff timed out. Switching to LAND.")
+        with master.mavlink_lock:
+            master.set_mode_apm("LAND")
+        if exit_on_error:
+            sys.exit(1)
+        return False
 
-    print(f"Hovering for {HOVER_TIME_S} s...")
+    log(f"Hovering for {HOVER_TIME_S} s...")
     hover_end = time.time() + HOVER_TIME_S
     while time.time() < hover_end:
         alt_m = get_relative_alt_m(master)
         remaining = int(hover_end - time.time())
         if alt_m is not None:
-            print(f"  Hover: {alt_m:.1f} m  ({remaining}s left)")
+            log(f"  Hover: {alt_m:.1f} m  ({remaining}s left)")
         time.sleep(1)
 
-    print("Landing...")
-    master.set_mode_apm("LAND")
+    log("Landing...")
+    with master.mavlink_lock:
+        master.set_mode_apm("LAND")
     time.sleep(5)
-    print("Hover flight complete.")
+    log("Hover flight complete.")
+    return True
 
 
 def get_relative_alt_m(master):
-    msg = master.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=1)
+    msg = recv_match_locked(master, type="GLOBAL_POSITION_INT", blocking=True, timeout=1)
     if msg is None:
         return None
     return msg.relative_alt / 1000.0
@@ -270,16 +315,34 @@ def wait_for_altitude(master, target_alt_m, tolerance_m=ALT_TOLERANCE_M,
     return False
 
 
+def normalize_lora_msg(msg):
+    text = str(msg).strip()
+    if text.endswith(".0") and text[:-2].isdigit():
+        text = text[:-2]
+    return text
+
+
 def handle_lora_msg(master, msg):
     """Run a command based on the LoRa msg field; ignore anything else."""
-    if msg == "1":
-        run_sequential(master)
-    elif msg == "2":
-        run_simultaneous(master)
-    elif msg == "3":
-        run_both(master)
-    elif msg == "4":
-        run_hover_flight(master)
+    msg = normalize_lora_msg(msg)
+    commands = {
+        "1": ("sequential motor test", run_sequential),
+        "2": ("simultaneous motor test", run_simultaneous),
+        "3": ("both motor tests", run_both),
+        "4": ("hover flight", lambda m: run_hover_flight(m, exit_on_error=False)),
+    }
+    if msg not in commands:
+        log(f"Unknown LoRa msg {msg!r} — ignored")
+        return
+
+    label, handler = commands[msg]
+    log(f"Running LoRa command {msg}: {label}")
+    try:
+        handler(master)
+        log(f"LoRa command {msg} finished")
+    except Exception as exc:
+        log(f"LoRa command {msg} failed: {exc}")
+        drain_statustext(master)
 
 
 def parse_args():
