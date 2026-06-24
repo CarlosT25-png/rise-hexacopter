@@ -2,18 +2,22 @@
 VENATOR MOTOR TEST CODE
 SAFETY: PROPS OFF / BARE MOTORS ONLY. Secure the frame before running.
 
-Connection: Jetson J41 UART -> Pixhawk TELEM2, 57600 baud, /dev/ttyTHS1
+Connection: Jetson J41 UART -> Pixhawk TELEM2, 57600 baud, /dev/ttyACM1
 """
 
 import time
 import sys
 from pymavlink import mavutil
 
+from lora_helper import listen as listen_lora
+
 # ----------------------------------------------------------------------
 # TUNABLE PARAMETERS
 # ----------------------------------------------------------------------
-SERIAL_PORT   = "/dev/ttyACM0"
+SERIAL_PORT   = "/dev/ttyACM1"
+RX_LORA_PORT  = "/dev/ttyUSB0"
 BAUD          = 57600
+BAUD_LORA     = 115200
 
 THROTTLE_PCT  = 5      # % throttle. Bump to ~8-10 if a motor won't spin up.
 DURATION_S    = 2      # seconds each motor spins
@@ -73,20 +77,25 @@ def run_simultaneous(master):
 
 def main():
     print("=" * 55)
-    print("VENATOR MOTOR TEST — CONFIRM PROPS ARE OFF")
+    print("VENATOR HEXACOPTER — MOTOR TEST / LoRa LISTENER")
     print("=" * 55)
+    print("\nSelect mode:")
+    print("  1) Sequential motor test (1..6 one at a time)")
+    print("  2) Simultaneous motor test (all 6 together)")
+    print("  3) Both motor tests (sequential, then simultaneous)")
+    print("  4) Listen to LoRa (1-byte mission packets)")
+    choice = input("Choice [1/2/3/4]: ").strip()
+
+    if choice == "4":
+        listen_lora(port=RX_LORA_PORT, baud=BAUD_LORA)
+        return
+
     ans = input("Props removed and frame secured? (yes/no): ").strip().lower()
     if ans != "yes":
         print("Aborting. Remove props first.")
         sys.exit(1)
 
     master = connect()
-
-    print("\nSelect test:")
-    print("  1) Sequential (1..6 one at a time)")
-    print("  2) Simultaneous (all 6 together)")
-    print("  3) Both (sequential, then simultaneous)")
-    choice = input("Choice [1/2/3]: ").strip()
 
     if choice == "1":
         run_sequential(master)
