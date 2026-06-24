@@ -15,7 +15,7 @@ from lora_helper import listen as listen_lora
 # ----------------------------------------------------------------------
 # TUNABLE PARAMETERS
 # ----------------------------------------------------------------------
-SERIAL_PORT   = "/dev/ttyACM1"
+SERIAL_PORT   = "/dev/ttyACM2"
 RX_LORA_PORT  = "/dev/ttyUSB0"
 BAUD          = 57600
 BAUD_LORA     = 115200
