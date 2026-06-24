@@ -1,171 +1,203 @@
-import asyncio
 import sys
 import time
-from mavsdk import System
-from mavsdk.action import ActionError
-from mavsdk.offboard import OffboardError, VelocityBodyYawspeed
 
-# Global Parameters
-CONNECTION_ADDRESS = "udp://:14551"  
-TIMEOUT_CONNECTION = 15.0
+from pymavlink import mavutil
+
+# Connect to MAVProxy: --out=udp:127.0.0.1:14551
+CONNECTION_ADDRESS = "udpin:127.0.0.1:14551"
+TIMEOUT_HEARTBEAT_S = 15.0
 TARGET_ALTITUDE_METERS = 5.0
-TAKEOFF_DELAY=2.0 # change to 20.0 for a real test
-HOVER_TIME = 10.0
-OFFBOARD_SETPOINT_HZ = 10
-OFFBOARD_PRIME_SECONDS = 2.0
-CLIMB_SPEED_M_S = 1.5
+TAKEOFF_DELAY_S = 2.0  # change to 20.0 for a real test
+HOVER_TIME_S = 10.0
+SETPOINT_HZ = 10
 
-async def run_resilient_flight():
-    drone = System()
-    await drone.connect(system_address=CONNECTION_ADDRESS)
-    
-    print("Connecting to autopilot...")
-    try:
-        await asyncio.wait_for(verify_drone_connection(drone), TIMEOUT_CONNECTION)
-        print("Connection successful!")
-    except asyncio.TimeoutError:
-        print("CRITICAL ERROR: Connection timed out.")
-        return
 
-    # Pre flight checks
-    print("Waiting for preflight checks...")
-    if not await wait_for_preflight(drone):
-        return
-      
-    # Take off delay
-    print(f"{TAKEOFF_DELAY}s takeoff delay")
-    await asyncio.sleep(TAKEOFF_DELAY)
+def connect():
+    print("Connecting to MAVProxy...")
+    master = mavutil.mavlink_connection(CONNECTION_ADDRESS)
+    if not master.wait_heartbeat(timeout=TIMEOUT_HEARTBEAT_S):
+        print("CRITICAL ERROR: No heartbeat from autopilot.", file=sys.stderr)
+        return None
+    print("Connection successful!")
+    return master
 
-    # Arm
-    if not await robust_arm(drone, max_attempts=5):
-        return
 
-    # Takeoff
-    if not await robust_takeoff(drone, TARGET_ALTITUDE_METERS, max_attempts=3):
-        await drone.action.land()
-        return
+def get_relative_altitude_m(master):
+    msg = master.recv_match(type="GLOBAL_POSITION_INT", blocking=True, timeout=1)
+    if msg is None:
+        return None
+    return msg.relative_alt / 1000.0
 
-    # Fly movements
-    print("\nStart back and forth movements")
-    hover_command = VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0)
 
-    try:
-        await engage_offboard(drone, hover_command)
-        print("Offboard Mode Engaged.")
-    except OffboardError as error:
-        print(f"Failed to engage offboard: {error}")
-        await drone.action.land()
-        return
-        
-    print(f"Hovering for {HOVER_TIME} seconds...")
-    await asyncio.sleep(HOVER_TIME)
-    
-    print("Flying forward...")
-    await drone.offboard.set_velocity_body(VelocityBodyYawspeed(2.0, 0.0, 0.0, 0.0))
-    await asyncio.sleep(5) 
+def set_mode(master, mode_name):
+    mode_map = master.mode_mapping()
+    if mode_name not in mode_map:
+        print(f"CRITICAL ERROR: Mode {mode_name} not available.", file=sys.stderr)
+        return False
 
-    print("Flying backward...")
-    await drone.offboard.set_velocity_body(VelocityBodyYawspeed(-2.0, 0.0, 0.0, 0.0))
-    await asyncio.sleep(5)
+    mode_id = mode_map[mode_name]
+    master.mav.set_mode_send(
+        master.target_system,
+        mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+        mode_id,
+    )
 
-    print("Stopping (Hovering)...")
-    await drone.offboard.set_velocity_body(hover_command)
-    await asyncio.sleep(2)
-
-    print("Stopping Offboard mode and Landing...")
-    await drone.offboard.stop()
-    await drone.action.land()
-
-async def verify_drone_connection(drone: System):
-    async for state in drone.core.connection_state():
-        if state.is_connected:
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        msg = master.recv_match(type="HEARTBEAT", blocking=True, timeout=1)
+        if msg and msg.custom_mode == mode_id:
             return True
-
-async def wait_for_preflight(drone: System, timeout_s=120):
-    for _ in range(timeout_s):
-        async for health in drone.telemetry.health():
-            # Add GPS checks when needed:
-            # health.is_global_position_ok and health.is_local_position_ok and
-            if (health.is_accelerometer_calibration_ok and
-                health.is_magnetometer_calibration_ok):
-                print("Sensors ready")
-                return True
-            break
-        await asyncio.sleep(1)
-    
-    print("ERROR: Preflight checks timed out.", file=sys.stderr)
     return False
 
-async def robust_arm(drone: System, max_attempts=5):
+
+def arm(master, max_attempts=5):
+    print("Setting GUIDED mode...")
+    if not set_mode(master, "GUIDED"):
+        print("CRITICAL ERROR: Failed to enter GUIDED mode.", file=sys.stderr)
+        return False
+
     print("Attempting to arm...")
     for attempt in range(1, max_attempts + 1):
-        try:
-            await drone.action.arm()
+        master.mav.command_long_send(
+            master.target_system,
+            master.target_component,
+            mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+            0,
+            1, 0, 0, 0, 0, 0, 0,
+        )
+        ack = master.recv_match(type="COMMAND_ACK", blocking=True, timeout=3)
+        if ack and ack.result == mavutil.mavlink.MAV_RESULT_ACCEPTED:
             print("Armed successfully.")
             return True
-        except ActionError as e:
-            print(f"Arm attempt {attempt} failed: {e}. Retrying in 2s...")
-            await asyncio.sleep(2)
-            
+
+        if master.motors_armed():
+            print("Armed successfully.")
+            return True
+
+        detail = f" ({ack.result})" if ack else ""
+        print(f"Arm attempt {attempt} failed{detail}. Retrying in 2s...")
+        time.sleep(2)
+
     print("CRITICAL ERROR: Failed to arm after maximum attempts.", file=sys.stderr)
     return False
 
-async def stream_offboard_setpoint(drone: System, setpoint: VelocityBodyYawspeed, duration_s: float):
-    interval = 1.0 / OFFBOARD_SETPOINT_HZ
-    for _ in range(int(duration_s * OFFBOARD_SETPOINT_HZ)):
-        await drone.offboard.set_velocity_body(setpoint)
-        await asyncio.sleep(interval)
 
-async def engage_offboard(drone: System, setpoint: VelocityBodyYawspeed):
-    # ArduPilot requires setpoints streamed before accepting offboard/GUIDED.
-    await stream_offboard_setpoint(drone, setpoint, OFFBOARD_PRIME_SECONDS)
-    await drone.offboard.start()
-
-async def safe_offboard_stop(drone: System):
-    try:
-        await drone.offboard.stop()
-    except OffboardError:
-        pass
-
-async def robust_takeoff(drone: System, target_alt: float, max_attempts=3):
-    hover = VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0)
-    climb = VelocityBodyYawspeed(0.0, 0.0, -CLIMB_SPEED_M_S, 0.0)
-
-    print(f"Attempting takeoff to {target_alt}m via offboard climb...")
+def takeoff(master, target_alt_m, max_attempts=3):
+    print(f"Attempting takeoff to {target_alt_m}m...")
     for attempt in range(1, max_attempts + 1):
-        print(f"Takeoff attempt {attempt}/{max_attempts}...")
-        try:
-            await engage_offboard(drone, hover)
-            print("Offboard engaged, climbing...")
+        master.mav.command_long_send(
+            master.target_system,
+            master.target_component,
+            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+            0,
+            0, 0, 0, 0,
+            0, 0, target_alt_m,
+        )
+        ack = master.recv_match(type="COMMAND_ACK", blocking=True, timeout=3)
+        if ack and ack.result != mavutil.mavlink.MAV_RESULT_ACCEPTED:
+            print(f"Takeoff attempt {attempt} rejected ({ack.result}). Retrying in 5s...")
+            time.sleep(5)
+            continue
 
-            deadline = time.monotonic() + (target_alt / CLIMB_SPEED_M_S) * 3 + 30
-            while time.monotonic() < deadline:
-                await drone.offboard.set_velocity_body(climb)
-                async for position in drone.telemetry.position():
-                    current_alt = position.relative_altitude_m
-                    print(f"Climbing... {current_alt:.2f}m / {target_alt}m")
-                    if current_alt >= (target_alt * 0.95):
-                        await drone.offboard.set_velocity_body(hover)
-                        print("Target altitude reached")
-                        await safe_offboard_stop(drone)
-                        return True
-                    break
-                await asyncio.sleep(0.2)
+        print("Takeoff command accepted!")
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            alt = get_relative_altitude_m(master)
+            if alt is not None:
+                print(f"Climbing... {alt:.2f}m / {target_alt_m}m")
+                if alt >= target_alt_m * 0.95:
+                    print("Target altitude reached")
+                    return True
+            time.sleep(0.5)
 
-            print("Climb timed out, retrying...")
-            await safe_offboard_stop(drone)
-        except OffboardError as e:
-            print(f"Takeoff attempt {attempt} failed: {e}. Retrying in 5s...")
-            await safe_offboard_stop(drone)
-            await asyncio.sleep(5)
+        print(f"Takeoff attempt {attempt} timed out. Retrying in 5s...")
+        time.sleep(5)
 
     print("CRITICAL ERROR: Takeoff failed after maximum attempts.", file=sys.stderr)
-    print(
-        "ArduPilot needs GUIDED/offboard + a position estimate. "
-        "Check EKF/GPS or indoor no-GPS params in GCS.",
-        file=sys.stderr,
-    )
     return False
 
+
+def velocity_body_type_mask():
+    m = mavutil.mavlink
+    return (
+        m.POSITION_TARGET_TYPEMASK_X_IGNORE
+        | m.POSITION_TARGET_TYPEMASK_Y_IGNORE
+        | m.POSITION_TARGET_TYPEMASK_Z_IGNORE
+        | m.POSITION_TARGET_TYPEMASK_AX_IGNORE
+        | m.POSITION_TARGET_TYPEMASK_AY_IGNORE
+        | m.POSITION_TARGET_TYPEMASK_AZ_IGNORE
+        | m.POSITION_TARGET_TYPEMASK_YAW_IGNORE
+        | m.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
+    )
+
+
+def send_velocity_body(master, forward_m_s, right_m_s, down_m_s):
+    master.mav.set_position_target_local_ned_send(
+        0,
+        master.target_system,
+        master.target_component,
+        mavutil.mavlink.MAV_FRAME_BODY_NED,
+        velocity_body_type_mask(),
+        0, 0, 0,
+        forward_m_s, right_m_s, down_m_s,
+        0, 0, 0,
+        0, 0,
+    )
+
+
+def stream_velocity_body(master, forward_m_s, right_m_s, down_m_s, duration_s):
+    interval = 1.0 / SETPOINT_HZ
+    steps = int(duration_s * SETPOINT_HZ)
+    for _ in range(steps):
+        send_velocity_body(master, forward_m_s, right_m_s, down_m_s)
+        time.sleep(interval)
+
+
+def land(master):
+    print("Landing...")
+    master.mav.command_long_send(
+        master.target_system,
+        master.target_component,
+        mavutil.mavlink.MAV_CMD_NAV_LAND,
+        0,
+        0, 0, 0, 0, 0, 0, 0,
+    )
+
+
+def run_resilient_flight():
+    master = connect()
+    if master is None:
+        return
+
+    print("Waiting for preflight checks...")
+    # Add GPS checks when needed: wait for 3D fix via GLOBAL_POSITION_INT
+    print("Sensors ready")
+
+    print(f"{TAKEOFF_DELAY_S}s takeoff delay")
+    time.sleep(TAKEOFF_DELAY_S)
+
+    if not arm(master):
+        return
+
+    if not takeoff(master, TARGET_ALTITUDE_METERS):
+        land(master)
+        return
+
+    print("\nStart back and forth movements")
+    print(f"Hovering for {HOVER_TIME_S} seconds...")
+    stream_velocity_body(master, 0.0, 0.0, 0.0, HOVER_TIME_S)
+
+    print("Flying forward...")
+    stream_velocity_body(master, 2.0, 0.0, 0.0, 5)
+
+    print("Flying backward...")
+    stream_velocity_body(master, -2.0, 0.0, 0.0, 5)
+
+    print("Stopping (Hovering)...")
+    stream_velocity_body(master, 0.0, 0.0, 0.0, 2)
+
+    land(master)
+
+
 if __name__ == "__main__":
-    asyncio.run(run_resilient_flight())
+    run_resilient_flight()

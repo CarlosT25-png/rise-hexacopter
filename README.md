@@ -74,12 +74,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-If `grpcio` fails to install from pip on ARM, install it from apt first:
-
-```bash
-sudo apt install -y python3-grpcio
-pip install -r requirements.txt
-```
+`main.py` uses **pymavlink** to talk to the autopilot through MAVProxy's UDP port (`14551`). Start MAVProxy before running the script.
 
 #### Run the code
 
