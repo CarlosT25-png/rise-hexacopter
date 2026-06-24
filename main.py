@@ -108,18 +108,27 @@ async def robust_arm(drone: System, max_attempts=5):
     return False
 
 async def robust_takeoff(drone: System, target_alt: float, max_attempts=3):
-    
     print("Configuring ArduPilot GUIDED mode handshake...")
     await drone.offboard.set_position_ned(PositionNedYaw(0.0, 0.0, 0.0, 0.0))
-    
-    try: # This is needed to bypass Ardupilot land security
-        await drone.offboard.start()
+    print("Offboard setpoint sent.")
+
+    try:  # Needed to bypass ArduPilot land security
+        await asyncio.wait_for(drone.offboard.start(), timeout=5.0)
         await drone.offboard.stop()
-    except OffboardError:
-        pass
-        
-    await drone.action.set_takeoff_altitude(target_alt)
-    
+        print("Offboard handshake done.")
+    except (OffboardError, asyncio.TimeoutError) as e:
+        print(f"Offboard handshake skipped ({e}).")
+
+    # PX4 only; ArduPilot rejects with PARAMETER_ERROR.
+    # Set PILOT_TKOFF_ALT (cm) in Mission Planner/QGC instead, e.g. 500 for 5 m.
+    try:
+        await drone.action.set_takeoff_altitude(target_alt)
+    except ActionError:
+        print(
+            f"Takeoff altitude: set PILOT_TKOFF_ALT={target_alt * 100:.0f} in GCS "
+            f"({target_alt}m) if needed."
+        )
+
     print(f"Attempting takeoff to {target_alt}m...")
     for attempt in range(1, max_attempts + 1):
         try:
