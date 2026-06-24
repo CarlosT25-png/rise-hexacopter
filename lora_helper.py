@@ -4,7 +4,10 @@ LoRa serial listener — receives JSON commands from the RX module.
 Connection: LoRa RX module -> Jetson USB, /dev/ttyUSB0 @ 115200 baud
 
 Expected payload (one JSON object per line):
-  {"msg": "1"}  -> handled by on_msg callback
+  {"msg": "1"}  sequential motor test
+  {"msg": "2"}  simultaneous motor test
+  {"msg": "3"}  both motor tests
+  {"msg": "4"}  hover flight
 """
 
 import json
