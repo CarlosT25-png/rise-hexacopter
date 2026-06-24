@@ -1,8 +1,9 @@
 import asyncio
 import sys
+import time
 from mavsdk import System
 from mavsdk.action import ActionError
-from mavsdk.offboard import OffboardError, PositionNedYaw, VelocityBodyYawspeed
+from mavsdk.offboard import OffboardError, VelocityBodyYawspeed
 
 # Global Parameters
 CONNECTION_ADDRESS = "udp://:14551"  
@@ -10,6 +11,9 @@ TIMEOUT_CONNECTION = 15.0
 TARGET_ALTITUDE_METERS = 5.0
 TAKEOFF_DELAY=2.0 # change to 20.0 for a real test
 HOVER_TIME = 10.0
+OFFBOARD_SETPOINT_HZ = 10
+OFFBOARD_PRIME_SECONDS = 2.0
+CLIMB_SPEED_M_S = 1.5
 
 async def run_resilient_flight():
     drone = System()
@@ -44,10 +48,9 @@ async def run_resilient_flight():
     # Fly movements
     print("\nStart back and forth movements")
     hover_command = VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0)
-    await drone.offboard.set_velocity_body(hover_command)
-    
+
     try:
-        await drone.offboard.start()
+        await engage_offboard(drone, hover_command)
         print("Offboard Mode Engaged.")
     except OffboardError as error:
         print(f"Failed to engage offboard: {error}")
@@ -107,47 +110,61 @@ async def robust_arm(drone: System, max_attempts=5):
     print("CRITICAL ERROR: Failed to arm after maximum attempts.", file=sys.stderr)
     return False
 
-async def robust_takeoff(drone: System, target_alt: float, max_attempts=3):
-    print("Configuring ArduPilot GUIDED mode handshake...")
-    await drone.offboard.set_position_ned(PositionNedYaw(0.0, 0.0, 0.0, 0.0))
-    print("Offboard setpoint sent.")
+async def stream_offboard_setpoint(drone: System, setpoint: VelocityBodyYawspeed, duration_s: float):
+    interval = 1.0 / OFFBOARD_SETPOINT_HZ
+    for _ in range(int(duration_s * OFFBOARD_SETPOINT_HZ)):
+        await drone.offboard.set_velocity_body(setpoint)
+        await asyncio.sleep(interval)
 
-    try:  # Needed to bypass ArduPilot land security
-        await asyncio.wait_for(drone.offboard.start(), timeout=5.0)
-        await drone.offboard.stop()
-        print("Offboard handshake done.")
-    except (OffboardError, asyncio.TimeoutError) as e:
-        print(f"Offboard handshake skipped ({e}).")
+async def engage_offboard(drone: System, setpoint: VelocityBodyYawspeed):
+    # ArduPilot requires setpoints streamed before accepting offboard/GUIDED.
+    await stream_offboard_setpoint(drone, setpoint, OFFBOARD_PRIME_SECONDS)
+    await drone.offboard.start()
 
-    # PX4 only; ArduPilot rejects with PARAMETER_ERROR.
-    # Set PILOT_TKOFF_ALT (cm) in Mission Planner/QGC instead, e.g. 500 for 5 m.
+async def safe_offboard_stop(drone: System):
     try:
-        await drone.action.set_takeoff_altitude(target_alt)
-    except ActionError:
-        print(
-            f"Takeoff altitude: set PILOT_TKOFF_ALT={target_alt * 100:.0f} in GCS "
-            f"({target_alt}m) if needed."
-        )
+        await drone.offboard.stop()
+    except OffboardError:
+        pass
 
-    print(f"Attempting takeoff to {target_alt}m...")
+async def robust_takeoff(drone: System, target_alt: float, max_attempts=3):
+    hover = VelocityBodyYawspeed(0.0, 0.0, 0.0, 0.0)
+    climb = VelocityBodyYawspeed(0.0, 0.0, -CLIMB_SPEED_M_S, 0.0)
+
+    print(f"Attempting takeoff to {target_alt}m via offboard climb...")
     for attempt in range(1, max_attempts + 1):
+        print(f"Takeoff attempt {attempt}/{max_attempts}...")
         try:
-            await drone.action.takeoff()
-            print("Takeoff command accepted!")
-            
-            async for position in drone.telemetry.position():
-                current_alt = position.relative_altitude_m
-                print(f"Climbing... {current_alt:.2f}m / {target_alt}m")
-                if current_alt >= (target_alt * 0.95): # 95% threashold
-                    print("Target altitud reached")
-                    return True
-                await asyncio.sleep(0.5)
-                
-        except ActionError as e:
-            print(f"Takeoff attempt {attempt} rejected: {e}. Retrying in 5s...")
+            await engage_offboard(drone, hover)
+            print("Offboard engaged, climbing...")
+
+            deadline = time.monotonic() + (target_alt / CLIMB_SPEED_M_S) * 3 + 30
+            while time.monotonic() < deadline:
+                await drone.offboard.set_velocity_body(climb)
+                async for position in drone.telemetry.position():
+                    current_alt = position.relative_altitude_m
+                    print(f"Climbing... {current_alt:.2f}m / {target_alt}m")
+                    if current_alt >= (target_alt * 0.95):
+                        await drone.offboard.set_velocity_body(hover)
+                        print("Target altitude reached")
+                        await safe_offboard_stop(drone)
+                        return True
+                    break
+                await asyncio.sleep(0.2)
+
+            print("Climb timed out, retrying...")
+            await safe_offboard_stop(drone)
+        except OffboardError as e:
+            print(f"Takeoff attempt {attempt} failed: {e}. Retrying in 5s...")
+            await safe_offboard_stop(drone)
             await asyncio.sleep(5)
-            
+
     print("CRITICAL ERROR: Takeoff failed after maximum attempts.", file=sys.stderr)
+    print(
+        "ArduPilot needs GUIDED/offboard + a position estimate. "
+        "Check EKF/GPS or indoor no-GPS params in GCS.",
+        file=sys.stderr,
+    )
     return False
 
 if __name__ == "__main__":
