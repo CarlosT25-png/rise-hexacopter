@@ -81,11 +81,11 @@ async def verify_drone_connection(drone: System):
 async def wait_for_preflight(drone: System, timeout_s=120):
     for _ in range(timeout_s):
         async for health in drone.telemetry.health():
-            if (health.is_global_position_ok and 
-                health.is_local_position_ok and 
-                health.is_accelerometer_calibration_ok and 
+            # Add GPS checks when needed:
+            # health.is_global_position_ok and health.is_local_position_ok and
+            if (health.is_accelerometer_calibration_ok and
                 health.is_magnetometer_calibration_ok):
-                print("GPS and sensors settle")
+                print("Sensors ready")
                 return True
             break
         await asyncio.sleep(1)
