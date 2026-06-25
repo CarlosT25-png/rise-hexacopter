@@ -22,6 +22,8 @@ RX_LORA_PORT  = "/dev/ttyUSB0"
 BAUD          = 57600
 BAUD_LORA     = 115200
 DETECT_TIMEOUT_S = 3     # seconds to wait for heartbeat on each candidate port
+CONNECT_RETRY_S  = 60    # seconds to keep retrying Pixhawk on boot (systemd)
+CONNECT_RETRY_INTERVAL_S = 5
 
 THROTTLE_PCT  = 5      # % throttle. Bump to ~8-10 if a motor won't spin up.
 DURATION_S    = 2      # seconds each motor spins
@@ -126,16 +128,42 @@ def connect(port=None, baud=None):
     baud = baud or BAUD
     use_port = port if port is not None else SERIAL_PORT
 
+    if use_port != "auto" and not os.path.exists(use_port):
+        log(f"{use_port} does not exist — auto-detecting Pixhawk...")
+        use_port = "auto"
+
+    master = None
     if use_port == "auto":
         master = detect_pixhawk_port(baud=baud, exclude=(RX_LORA_PORT,))
-        if master is None:
-            log("Failed to auto-detect Pixhawk. Set SERIAL_PORT or use --serial.")
-            sys.exit(1)
     else:
-        master = open_pixhawk(use_port, baud=baud)
+        try:
+            master = open_pixhawk(use_port, baud=baud)
+        except Exception as exc:
+            log(f"Failed on {use_port}: {exc}")
+            log("Falling back to auto-detect...")
+            master = detect_pixhawk_port(baud=baud, exclude=(RX_LORA_PORT,))
+
+    if master is None:
+        return None
 
     start_gcs_heartbeat(master)
     return master
+
+
+def connect_with_retry(port=None, baud=None, timeout_s=CONNECT_RETRY_S):
+    """Retry Pixhawk connection — USB ports may appear a few seconds after boot."""
+    start = time.time()
+    while time.time() - start < timeout_s:
+        master = connect(port=port, baud=baud)
+        if master is not None:
+            return master
+        remaining = int(timeout_s - (time.time() - start))
+        log(f"Pixhawk not found, retrying in {CONNECT_RETRY_INTERVAL_S}s "
+            f"({remaining}s left)...")
+        time.sleep(CONNECT_RETRY_INTERVAL_S)
+
+    log("Failed to connect to Pixhawk. Check USB cable and TELEM2 wiring.")
+    sys.exit(1)
 
 
 def start_gcs_heartbeat(master):
@@ -451,7 +479,7 @@ def run_lora_mode(serial_port=None):
     log("VENATOR HEXACOPTER — LoRa RX")
     log("=" * 55)
     log(f"LoRa port: {RX_LORA_PORT} @ {BAUD_LORA}")
-    master = connect(port=serial_port)
+    master = connect_with_retry(port=serial_port)
     log("Pixhawk connected. Opening LoRa serial port...")
     listen_lora(
         port=RX_LORA_PORT,
@@ -504,7 +532,7 @@ def main():
         run_lora_mode(serial_port=args.serial)
         return
 
-    master = connect(port=args.serial)
+    master = connect_with_retry(port=args.serial)
 
     if choice == "1":
         run_sequential(master)

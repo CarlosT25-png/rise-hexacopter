@@ -116,7 +116,8 @@ sudo nano /etc/systemd/system/venator-lora.service
 ```ini
 [Unit]
 Description=Venator LoRa RX listener
-After=network.target
+After=network.target systemd-udev-settle.service
+Wants=systemd-udev-settle.service
 
 [Service]
 Type=simple
@@ -153,8 +154,9 @@ You should see lines like:
 
 ```text
 Venator LoRa RX starting...
-Connecting to Pixhawk /dev/ttyACM1 @ 57600...
-Pixhawk heartbeat OK ...
+Auto-detecting Pixhawk (3 port(s) to try)...
+  Trying /dev/ttyACM2...
+Pixhawk heartbeat OK on /dev/ttyACM2 ...
 Listening on /dev/ttyUSB0 @ 115200 baud
 Ready — waiting for LoRa packets...
 ```
@@ -170,4 +172,6 @@ sudo systemctl stop venator-lora.service     # stop
 
 The service exits with code 0 on a normal stop and code 1 on unexpected errors, so `Restart=on-failure` will restart after crashes but not after a deliberate `systemctl stop`.
 
-**Important:** `ExecStart` must include `--lora`. Without it (and without a terminal), the script will try to show the interactive menu and fail with `EOF when reading a line`. The latest code also auto-starts LoRa when stdin is not a terminal, but `--lora` is still recommended for systemd.
+**Important:** `ExecStart` must include `--lora`. Do **not** pass `--serial /dev/ttyACM0` unless you want to force that port — leave it out so Pixhawk is auto-detected on `/dev/ttyACM*`.
+
+If you see `could not open port /dev/ttyACM0`, the Jetson is running an old `main.py`. Pull the latest code and confirm `SERIAL_PORT = "auto"` in `main.py`.
