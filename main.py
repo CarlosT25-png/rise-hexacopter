@@ -1,10 +1,12 @@
 """
 VENATOR HEXACOPTER — motor test, hover flight, and LoRa control.
 
-Connection: Jetson J41 UART -> Pixhawk TELEM2, 57600 baud, /dev/ttyACM1
+Connection: Jetson J41 UART -> Pixhawk TELEM2, 57600 baud (port auto-detected)
 """
 
 import argparse
+import glob
+import os
 import time
 import sys
 import threading
@@ -15,10 +17,11 @@ from lora_helper import listen as listen_lora
 # ----------------------------------------------------------------------
 # TUNABLE PARAMETERS
 # ----------------------------------------------------------------------
-SERIAL_PORT   = "/dev/ttyACM2"
+SERIAL_PORT   = "auto"   # "auto", or e.g. "/dev/ttyACM1" to force a port
 RX_LORA_PORT  = "/dev/ttyUSB0"
 BAUD          = 57600
 BAUD_LORA     = 115200
+DETECT_TIMEOUT_S = 3     # seconds to wait for heartbeat on each candidate port
 
 THROTTLE_PCT  = 5      # % throttle. Bump to ~8-10 if a motor won't spin up.
 DURATION_S    = 2      # seconds each motor spins
@@ -50,22 +53,87 @@ def log(msg):
     print(msg, flush=True)
 
 
-def connect():
-    log(f"Connecting to Pixhawk {SERIAL_PORT} @ {BAUD}...")
+def list_serial_port_candidates(exclude=()):
+    """Return unique serial device paths, stable by-id links first."""
+    exclude_real = {
+        os.path.realpath(path)
+        for path in exclude
+        if os.path.exists(path)
+    }
+    patterns = (
+        "/dev/serial/by-id/*",
+        "/dev/ttyACM*",
+        "/dev/ttyUSB*",
+    )
+    seen = set()
+    candidates = []
+    for pattern in patterns:
+        for path in sorted(glob.glob(pattern)):
+            if not os.path.exists(path) or os.path.isdir(path):
+                continue
+            real = os.path.realpath(path)
+            if real in exclude_real or real in seen:
+                continue
+            seen.add(real)
+            candidates.append(real)
+    return candidates
+
+
+def open_pixhawk(port, baud=BAUD, heartbeat_timeout_s=DETECT_TIMEOUT_S):
+    log(f"Connecting to {port} @ {baud}...")
     master = mavutil.mavlink_connection(
-        SERIAL_PORT,
-        baud=BAUD,
+        port,
+        baud=baud,
         source_system=255,
         source_component=0,
     )
     master.mavlink_lock = threading.Lock()
     log("Waiting for Pixhawk heartbeat...")
     with master.mavlink_lock:
-        master.wait_heartbeat()
+        master.wait_heartbeat(timeout=heartbeat_timeout_s)
     if master.target_component in (0, mavutil.mavlink.MAV_COMP_ID_ALL):
         master.target_component = mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1
-    log(f"Pixhawk heartbeat OK — system {master.target_system}, "
+    log(f"Pixhawk heartbeat OK on {port} — system {master.target_system}, "
         f"component {master.target_component}")
+    return master
+
+
+def detect_pixhawk_port(baud=BAUD, exclude=()):
+    candidates = list_serial_port_candidates(exclude=exclude)
+    if not candidates:
+        log("No serial devices found to scan")
+        return None
+
+    log(f"Auto-detecting Pixhawk ({len(candidates)} port(s) to try)...")
+    for port in candidates:
+        log(f"  Trying {port}...")
+        master = None
+        try:
+            master = open_pixhawk(port, baud=baud)
+            log(f"Using Pixhawk on {port}")
+            return master
+        except Exception as exc:
+            log(f"  Not Pixhawk on {port}: {exc}")
+            if master is not None:
+                try:
+                    master.close()
+                except Exception:
+                    pass
+    return None
+
+
+def connect(port=None, baud=None):
+    baud = baud or BAUD
+    use_port = port if port is not None else SERIAL_PORT
+
+    if use_port == "auto":
+        master = detect_pixhawk_port(baud=baud, exclude=(RX_LORA_PORT,))
+        if master is None:
+            log("Failed to auto-detect Pixhawk. Set SERIAL_PORT or use --serial.")
+            sys.exit(1)
+    else:
+        master = open_pixhawk(use_port, baud=baud)
+
     start_gcs_heartbeat(master)
     return master
 
@@ -357,6 +425,12 @@ def parse_args():
         action="store_true",
         help="force interactive menu (default when run from a terminal)",
     )
+    parser.add_argument(
+        "--serial",
+        default=None,
+        metavar="PORT",
+        help="Pixhawk serial port (default: auto-detect /dev/ttyACM*)",
+    )
     return parser.parse_args()
 
 
@@ -371,13 +445,13 @@ def should_run_lora(args):
     return False
 
 
-def run_lora_mode():
+def run_lora_mode(serial_port=None):
     log("Venator LoRa RX starting...")
     log("=" * 55)
     log("VENATOR HEXACOPTER — LoRa RX")
     log("=" * 55)
     log(f"LoRa port: {RX_LORA_PORT} @ {BAUD_LORA}")
-    master = connect()
+    master = connect(port=serial_port)
     log("Pixhawk connected. Opening LoRa serial port...")
     listen_lora(
         port=RX_LORA_PORT,
@@ -391,7 +465,7 @@ def main():
     setup_service_logging()
     args = parse_args()
     if should_run_lora(args):
-        run_lora_mode()
+        run_lora_mode(serial_port=args.serial)
         return
 
     print("=" * 55)
@@ -427,10 +501,10 @@ def main():
         sys.exit(1)
 
     if choice == "5":
-        run_lora_mode()
+        run_lora_mode(serial_port=args.serial)
         return
 
-    master = connect()
+    master = connect(port=args.serial)
 
     if choice == "1":
         run_sequential(master)

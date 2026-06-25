@@ -74,7 +74,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Pixhawk connection defaults are in `main.py` (`SERIAL_PORT`, `BAUD`). LoRa defaults: `RX_LORA_PORT`, `BAUD_LORA`.
+Pixhawk connection defaults are in `main.py` (`SERIAL_PORT="auto"`, `BAUD`). LoRa: `RX_LORA_PORT`, `BAUD_LORA`. Override Pixhawk port with `--serial /dev/ttyACM1`.
 
 #### Run the code
 
