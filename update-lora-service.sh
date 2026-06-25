@@ -15,29 +15,69 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 echo "==> Repository: $(pwd)"
-echo "==> Updating from ${REMOTE}/${BRANCH}..."
+echo "==> Fetching ${REMOTE}/${BRANCH}..."
+git fetch "${REMOTE}" "${BRANCH}"
+
+REMOTE_REF="${REMOTE}/${BRANCH}"
+LOCAL_SHA="$(git rev-parse HEAD)"
+REMOTE_SHA="$(git rev-parse "${REMOTE_REF}")"
+
+reset_to_remote() {
+    git reset --hard "${REMOTE_REF}"
+    echo "Reset to ${REMOTE_REF}."
+}
+
+pull_ff_only() {
+    if git merge-base --is-ancestor "${LOCAL_SHA}" "${REMOTE_SHA}"; then
+        git merge --ff-only "${REMOTE_REF}"
+        echo "Fast-forwarded to ${REMOTE_REF}."
+    else
+        echo "Error: cannot fast-forward (branches diverged)."
+        return 1
+    fi
+}
 
 if [[ -n "$(git status --porcelain)" ]]; then
     echo
-    echo "Local changes detected:"
+    echo "Uncommitted local changes:"
     git status --short
     echo
-    read -r -p "Discard local changes and reset to ${REMOTE}/${BRANCH}? [y/N] " reset_ans
+    read -r -p "Discard changes and reset to ${REMOTE_REF}? [y/N] " reset_ans
     if [[ "${reset_ans}" =~ ^[Yy]$ ]]; then
-        git fetch "${REMOTE}" "${BRANCH}"
-        git reset --hard "${REMOTE}/${BRANCH}"
-        echo "Reset to ${REMOTE}/${BRANCH}."
+        reset_to_remote
     else
-        read -r -p "Try git pull anyway (may fail or merge)? [y/N] " pull_ans
+        read -r -p "Try git pull --rebase anyway? [y/N] " pull_ans
         if [[ "${pull_ans}" =~ ^[Yy]$ ]]; then
-            git pull "${REMOTE}" "${BRANCH}"
+            git pull --rebase "${REMOTE}" "${BRANCH}"
         else
             echo "Aborted — no git changes applied."
             exit 1
         fi
     fi
+elif [[ "${LOCAL_SHA}" == "${REMOTE_SHA}" ]]; then
+    echo "Already up to date with ${REMOTE_REF}."
+elif git merge-base --is-ancestor "${LOCAL_SHA}" "${REMOTE_SHA}"; then
+    echo "Behind ${REMOTE_REF} — fast-forwarding..."
+    pull_ff_only
+elif git merge-base --is-ancestor "${REMOTE_SHA}" "${LOCAL_SHA}"; then
+    echo "Ahead of ${REMOTE_REF} (local commits only). Skipping pull."
 else
-    git pull "${REMOTE}" "${BRANCH}"
+    echo
+    echo "Branch diverged from ${REMOTE_REF}:"
+    git log --oneline --left-right "HEAD...${REMOTE_REF}" | head -10
+    echo
+    read -r -p "Reset to ${REMOTE_REF} (discard local commits)? [y/N] " reset_ans
+    if [[ "${reset_ans}" =~ ^[Yy]$ ]]; then
+        reset_to_remote
+    else
+        read -r -p "Try git pull --rebase? [y/N] " rebase_ans
+        if [[ "${rebase_ans}" =~ ^[Yy]$ ]]; then
+            git pull --rebase "${REMOTE}" "${BRANCH}"
+        else
+            echo "Aborted — no git changes applied."
+            exit 1
+        fi
+    fi
 fi
 
 echo
