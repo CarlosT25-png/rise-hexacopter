@@ -145,6 +145,7 @@ sudo systemctl start venator-lora.service
 `systemctl start` only prints **Started venator-lora.service** — that means systemd launched the process, not that LoRa is already listening. View the application logs with:
 
 ```bash
+sudo systemctl restart venator-lora.service
 sudo journalctl -u venator-lora.service -f
 ```
 
