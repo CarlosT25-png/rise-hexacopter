@@ -83,7 +83,7 @@ source .venv/bin/activate
 python3 main.py
 ```
 
-Interactive menu options include motor tests, hover flight, and LoRa RX.
+Interactive menu options: sequential motor test, simultaneous motor test, hover flight, and LoRa RX.
 
 To start the LoRa listener directly (no menu):
 

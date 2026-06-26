@@ -6,15 +6,42 @@ Sources:
   pymavlink-utils/terrain-check.py
 """
 
-from typing import Dict, Optional, Union
+from typing import Callable, Dict, Optional, Union
 
 from hex_mavlink._common import dialect, wait_for_message
+from hex_mavlink.connection import recv_match_locked
 
 __all__ = [
     "send_statustext",
     "log_onboard_data",
     "check_terrain",
+    "statustext_string",
+    "drain_statustext",
 ]
+
+LogFn = Callable[[str], None]
+
+
+def _default_log(msg: str) -> None:
+    print(msg, flush=True)
+
+
+def statustext_string(msg) -> str:
+    """Decode a STATUSTEXT message body."""
+    text = msg.text
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
+    return text.strip("\x00").strip()
+
+
+def drain_statustext(vehicle, log: Optional[LogFn] = None) -> None:
+    """Print any pending STATUSTEXT messages from the vehicle."""
+    log_fn = log or _default_log
+    while True:
+        msg = recv_match_locked(vehicle, type="STATUSTEXT", blocking=False)
+        if msg is None:
+            break
+        log_fn("  FC: {}".format(statustext_string(msg)))
 
 
 def send_statustext(

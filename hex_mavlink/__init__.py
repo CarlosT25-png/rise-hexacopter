@@ -40,10 +40,14 @@ from hex_mavlink.arming import (
     VEHICLE_DISARM,
     arm,
     disarm,
+    format_prearm_failures,
     is_armed,
+    log_prearm_failures,
+    request_prearm_checks,
     wait_armed,
     wait_disarmed,
     wait_prearm,
+    wait_prearm_ok,
 )
 from hex_mavlink.connection import (
     connect,
@@ -118,7 +122,7 @@ from hex_mavlink.mission import (
 from hex_mavlink.modes import get_mode, set_mode, supported_modes
 from hex_mavlink.parameters import get_param, request_param_list, set_param
 from hex_mavlink.rally import get_rally_count, get_rally_points, upload_rally_points
-from hex_mavlink.status import check_terrain, log_onboard_data, send_statustext
+from hex_mavlink.status import check_terrain, drain_statustext, log_onboard_data, send_statustext
 
 __all__ = [
     "VehicleTimeout",
@@ -161,6 +165,10 @@ __all__ = [
     "VEHICLE_ARM",
     "VEHICLE_DISARM",
     "wait_prearm",
+    "wait_prearm_ok",
+    "request_prearm_checks",
+    "format_prearm_failures",
+    "log_prearm_failures",
     "arm",
     "disarm",
     "is_armed",
@@ -218,6 +226,7 @@ __all__ = [
     "send_statustext",
     "log_onboard_data",
     "check_terrain",
+    "drain_statustext",
     "create_ipc_connection",
     "send_heartbeat_once",
     "start_heartbeat_thread",
