@@ -39,8 +39,8 @@ TAKEOFF_ALT_M = 5.0
 HOVER_TIME_S = 30
 ALT_TOLERANCE_M = 0.5
 TAKEOFF_TIMEOUT_S = 60
-PREARM_TIMEOUT_S = 120
-ARM_TIMEOUT_S = 30
+PREARM_TIMEOUT_S = 15
+ARM_TIMEOUT_S = 15
 # ----------------------------------------------------------------------
 
 
