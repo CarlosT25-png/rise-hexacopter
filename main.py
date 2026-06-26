@@ -194,10 +194,12 @@ def wait_for_altitude(master, target_alt_m, tolerance_m=ALT_TOLERANCE_M,
     return False
 
 
-def run_hover_flight(master, exit_on_error=True):
+def run_hover_flight(master, exit_on_error=True, skip_prearm=False):
     log("=== HOVER FLIGHT: {} m for {} s ===".format(TAKEOFF_ALT_M, HOVER_TIME_S))
 
-    if not arming.wait_prearm_ok(master, timeout_s=PREARM_TIMEOUT_S, log=log):
+    if skip_prearm:
+        log("WARNING: skipping pre-arm wait (--skip-prearm). FC may still deny arming.")
+    elif not arming.wait_prearm_ok(master, timeout_s=PREARM_TIMEOUT_S, log=log):
         if exit_on_error:
             sys.exit(1)
         return False
@@ -291,6 +293,11 @@ def parse_args():
         metavar="PORT",
         help="Pixhawk serial port (default: auto-detect /dev/ttyACM*)",
     )
+    parser.add_argument(
+        "--skip-prearm",
+        action="store_true",
+        help="run hover flight immediately, without waiting for pre-arm checks",
+    )
     return parser.parse_args()
 
 
@@ -331,6 +338,11 @@ def run_lora_mode(serial_port=None):
 def main():
     setup_service_logging()
     args = parse_args()
+    if args.skip_prearm:
+        master = connect_with_retry(port=args.serial)
+        run_hover_flight(master, skip_prearm=True)
+        return
+
     if should_run_lora(args):
         run_lora_mode(serial_port=args.serial)
         return
