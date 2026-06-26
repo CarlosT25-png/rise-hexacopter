@@ -5,13 +5,15 @@ Connection: Jetson J41 UART -> Pixhawk TELEM2, 57600 baud (port auto-detected)
 """
 
 import argparse
-import glob
-import os
 import time
 import sys
-import threading
 from pymavlink import mavutil
 
+from hex_mavlink.connection import (
+    connect as _mavlink_connect,
+    connect_with_retry as _mavlink_connect_with_retry,
+    recv_match_locked,
+)
 from lora_helper import listen as listen_lora
 
 # ----------------------------------------------------------------------
@@ -55,135 +57,28 @@ def log(msg):
     print(msg, flush=True)
 
 
-def list_serial_port_candidates(exclude=()):
-    """Return unique serial device paths, stable by-id links first."""
-    exclude_real = {
-        os.path.realpath(path)
-        for path in exclude
-        if os.path.exists(path)
-    }
-    patterns = (
-        "/dev/serial/by-id/*",
-        "/dev/ttyACM*",
-        "/dev/ttyUSB*",
-    )
-    seen = set()
-    candidates = []
-    for pattern in patterns:
-        for path in sorted(glob.glob(pattern)):
-            if not os.path.exists(path) or os.path.isdir(path):
-                continue
-            real = os.path.realpath(path)
-            if real in exclude_real or real in seen:
-                continue
-            seen.add(real)
-            candidates.append(real)
-    return candidates
-
-
-def open_pixhawk(port, baud=BAUD, heartbeat_timeout_s=DETECT_TIMEOUT_S):
-    log(f"Connecting to {port} @ {baud}...")
-    master = mavutil.mavlink_connection(
-        port,
-        baud=baud,
-        source_system=255,
-        source_component=0,
-    )
-    master.mavlink_lock = threading.Lock()
-    log("Waiting for Pixhawk heartbeat...")
-    with master.mavlink_lock:
-        master.wait_heartbeat(timeout=heartbeat_timeout_s)
-    if master.target_component in (0, mavutil.mavlink.MAV_COMP_ID_ALL):
-        master.target_component = mavutil.mavlink.MAV_COMP_ID_AUTOPILOT1
-    log(f"Pixhawk heartbeat OK on {port} — system {master.target_system}, "
-        f"component {master.target_component}")
-    return master
-
-
-def detect_pixhawk_port(baud=BAUD, exclude=()):
-    candidates = list_serial_port_candidates(exclude=exclude)
-    if not candidates:
-        log("No serial devices found to scan")
-        return None
-
-    log(f"Auto-detecting Pixhawk ({len(candidates)} port(s) to try)...")
-    for port in candidates:
-        log(f"  Trying {port}...")
-        master = None
-        try:
-            master = open_pixhawk(port, baud=baud)
-            log(f"Using Pixhawk on {port}")
-            return master
-        except Exception as exc:
-            log(f"  Not Pixhawk on {port}: {exc}")
-            if master is not None:
-                try:
-                    master.close()
-                except Exception:
-                    pass
-    return None
-
-
 def connect(port=None, baud=None):
-    baud = baud or BAUD
-    use_port = port if port is not None else SERIAL_PORT
-
-    if use_port != "auto" and not os.path.exists(use_port):
-        log(f"{use_port} does not exist — auto-detecting Pixhawk...")
-        use_port = "auto"
-
-    master = None
-    if use_port == "auto":
-        master = detect_pixhawk_port(baud=baud, exclude=(RX_LORA_PORT,))
-    else:
-        try:
-            master = open_pixhawk(use_port, baud=baud)
-        except Exception as exc:
-            log(f"Failed on {use_port}: {exc}")
-            log("Falling back to auto-detect...")
-            master = detect_pixhawk_port(baud=baud, exclude=(RX_LORA_PORT,))
-
-    if master is None:
-        return None
-
-    start_gcs_heartbeat(master)
-    return master
+    return _mavlink_connect(
+        port=port if port is not None else SERIAL_PORT,
+        baud=baud or BAUD,
+        exclude=(RX_LORA_PORT,),
+        heartbeat_timeout_s=DETECT_TIMEOUT_S,
+        log=log,
+    )
 
 
 def connect_with_retry(port=None, baud=None, timeout_s=CONNECT_RETRY_S):
     """Retry Pixhawk connection — USB ports may appear a few seconds after boot."""
-    start = time.time()
-    while time.time() - start < timeout_s:
-        master = connect(port=port, baud=baud)
-        if master is not None:
-            return master
-        remaining = int(timeout_s - (time.time() - start))
-        log(f"Pixhawk not found, retrying in {CONNECT_RETRY_INTERVAL_S}s "
-            f"({remaining}s left)...")
-        time.sleep(CONNECT_RETRY_INTERVAL_S)
-
-    log("Failed to connect to Pixhawk. Check USB cable and TELEM2 wiring.")
-    sys.exit(1)
-
-
-def start_gcs_heartbeat(master):
-    """Act as a GCS so ArduPilot sees a ground station (like QGroundControl)."""
-    def _loop():
-        while True:
-            with master.mavlink_lock:
-                master.mav.heartbeat_send(
-                    mavutil.mavlink.MAV_TYPE_GCS,
-                    mavutil.mavlink.MAV_AUTOPILOT_INVALID,
-                    0, 0, 0,
-                )
-            time.sleep(1)
-
-    threading.Thread(target=_loop, daemon=True).start()
-
-
-def recv_match_locked(master, **kwargs):
-    with master.mavlink_lock:
-        return master.recv_match(**kwargs)
+    return _mavlink_connect_with_retry(
+        port=port,
+        baud=baud or BAUD,
+        timeout_s=timeout_s,
+        retry_interval_s=CONNECT_RETRY_INTERVAL_S,
+        exclude=(RX_LORA_PORT,),
+        heartbeat_timeout_s=DETECT_TIMEOUT_S,
+        log=log,
+        fatal=True,
+    )
 
 
 def drain_statustext(master):
