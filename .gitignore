@@ -6,6 +6,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
+pymavlink-utils/
 
 # OS / editor
 .DS_Store
